@@ -75,7 +75,49 @@ Calibrate trên 39 ảnh của `data/calib`, có đáp án `MANIFEST.csv`. Bản
 3. **Nhầm lớp mà model lớn cũng nhầm, và checker báo động giả.** Calib: WRONG_CLASS recall 0.83, sót 1/6 lỗi chèn. Lỗi thật trong raw lại nghiêng về car/truck/bus, là nhóm model dễ lẫn hơn person→car trong calib. Ngoài ra, sau khi người thay bằng nhãn chuẩn, `07_error_list_v3` vẫn còn **25/80 ảnh đã duyệt bị cờ** (11 MISSING, 10 FALSE_POS, 4 LOOSE, 3 WRONG_CLASS). Đó là chỗ model và người bất đồng, tức cảnh báo của máy không thay được mắt người.
 
 ## 5. Train: raw vs clean (tùy chọn, chấm riêng)
-**Chưa chạy.** Máy cá nhân không có GPU, và chưa chạy notebook Colab (`notebooks/day09_train_compare.ipynb`). Phần train là tùy chọn và chấm riêng, nên mình nộp phần lõi trước. Vì vậy chưa có `submission/results/` và mình không đưa ra kết luận nào về mAP (clean − raw).
+**Cấu hình.** Chạy trên Colab T4 bằng `notebooks/day09_train_compare.ipynb`.
+- Model `yolo26n.pt`, 20 epoch, batch 16, ảnh 640, **2 seed (0, 1)** cho mỗi biến thể.
+- Cùng tập val (`gold_val`, 40 ảnh) và cùng tập **test** (100 ảnh, nhãn người).
+- `clean` = `export/clean_v1`: 202 ảnh, `manifest_sha1 = 4278b929…`, khớp với bài nộp. `raw` = 224 ảnh gốc, không sửa gì.
+
+Bảng sau lấy từ `submission/results/comparison.md`:
+
+| biến thể | #ảnh train | số seed | map50 (TB ± độ lệch) | map50_95 (TB ± độ lệch) | precision (TB ± độ lệch) | recall (TB ± độ lệch) |
+|---|---|---|---|---|---|---|
+| raw | 224 | 2 | 0.726 ± 0.000 | 0.512 ± 0.004 | 0.764 ± 0.061 | 0.649 ± 0.028 |
+| clean | 202 | 2 | 0.701 ± 0.025 | 0.487 ± 0.008 | 0.759 ± 0.003 | 0.625 ± 0.019 |
+
+**So với nhiễu.**
+- Chênh mAP50 (clean − raw) = **−0.025**. Con số này **bằng đúng độ lệch giữa 2 seed của clean** (0.025): mAP50 của clean là 0.718 ở seed 0 và 0.683 ở seed 1, tức hai seed chênh nhau 0.035.
+- Seed 0 của clean (0.718) chỉ kém raw 0.008.
+- Với 2 seed, ước lượng độ lệch rất thô. Độ lệch ≈ 0 của raw (0.7256 và 0.7259) nhiều khả năng là trùng hợp, không phải raw thật sự ổn định.
+
+**Kết luận: chưa kết luận được.** Clean không tốt hơn raw trên tập test này, và mức kém hơn cũng nằm trong nhiễu. Kết quả không ủng hộ câu "làm sạch giúp model tốt hơn", nhưng cũng chưa chứng minh được là làm sạch gây hại.
+
+**Theo lớp** (AP50 của seed 0 / seed 1):
+- `truck` giảm rõ nhất: raw 0.657 / 0.640, clean 0.590 / 0.486.
+- `car` (≈ 0.74), `person` (≈ 0.82) và `bus` (0.68–0.73) gần như không đổi.
+- Phần chênh lệch chủ yếu đến từ `truck`, cũng là lớp dao động nhiều nhất giữa 2 seed của clean (0.590 so với 0.486).
+
+**Giả thuyết và cách kiểm:**
+1. **Rò rỉ test làm điểm raw cao hơn thật.**
+   - `raw` chứa 5 ảnh trùng tập test mà pipeline đã báo `LEAK_TEST`: `img_0049`↔`test_033`, `img_0174`↔`test_085`, `img_0221`↔`test_009` (trùng byte); `img_0167`↔`test_044`; `img_0101`↔`test_039`. Clean đã loại 5 ảnh này.
+   - Cách kiểm: đánh giá lại cả 4 model trên test **bỏ 5 ảnh trên** (95 ảnh). Nếu khoảng cách thu hẹp thì một phần lợi thế của raw là do rò rỉ.
+2. **`truck` quá ít mẫu, nhiễu lớn.**
+   - Toàn lô chỉ có 41 box truck (`class_stats.csv`), so với 574 box person. Clean còn mất thêm ảnh vì loại trùng và xoá dòng, mỗi ảnh có truck bị bớt đều làm AP truck đổi mạnh.
+   - Cách kiểm: đếm box truck trong `work/train/{raw,clean}` (ô 5 của notebook), chạy thêm seed (≥ 5) và xem độ lệch AP truck.
+3. **Clean chưa thật sạch, và nhãn không đồng nhất.**
+   - Gate ra Hold: 38/202 ảnh còn cảnh báo chưa duyệt, LOOSE_BOX gần như không bắt được (recall 0.20, xem §3).
+   - 80 ảnh được thay bằng nhãn người, các ảnh còn lại vẫn là nhãn máy, nên hai phong cách nhãn bị trộn lẫn.
+   - Cách kiểm: train biến thể `oracle` (nhãn người, cùng 202 ảnh) làm chặn trên. Nếu oracle cũng không vượt raw thì vấn đề nằm ở cỡ dữ liệu hoặc độ nhiễu, không phải ở nhãn.
+4. **Lỗi cú pháp ít ảnh hưởng tới train.** Ultralytics vốn tự bỏ qua dòng hoặc ảnh hỏng của raw (id lớp lạ, box tràn), nên phần autofix sửa có thể không tạo khác biệt. Ngược lại, clean ít hơn raw 22 ảnh (−10%).
+   - Cách kiểm: đọc cảnh báo "ignoring corrupt image/label" ở ô 6 của notebook để biết raw thực sự train trên bao nhiêu ảnh.
+
+**Việc tiếp theo:**
+- Chạy ≥ 5 seed.
+- Đánh giá trên test đã bỏ 5 ảnh rò rỉ.
+- Thêm biến thể `oracle`.
+- Người duyệt thêm 45 ảnh còn trong hàng đợi, rồi train lại.
 
 ## 6. Quyết định và ghi chú AI
 **(a) Quyết định cuối: HOLD.** Không phát hành `clean_v1`. Đây là bản nháp, dùng được cho thí nghiệm.
